@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proxy Browser</title>
+<style>
+  :root { --bg:#f3f5f7; --panel:#ffffff; --ink:#1b2430; --muted:#5d6b7a; --line:#d5dbe1; --accent:#1f6f8b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12171d; --panel:#1b222b; --ink:#e6ebf0; --muted:#93a1b0; --line:#2b3541; --accent:#5ec0dd; }
+  }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body { display:flex; flex-direction:column; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,sans-serif; }
+  header { background:var(--panel); border-bottom:1px solid var(--line); padding:10px 12px; display:grid; gap:8px; }
+  .row { display:flex; gap:8px; }
+  input,select,button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  input { flex:1; min-width:0; }
+  button { background:var(--accent); color:#fff; border-color:var(--accent); cursor:pointer; }
+  button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #status { color:var(--muted); font-size:13px; min-height:1.3em; }
+  main { flex:1; position:relative; }
+  iframe { position:absolute; inset:0; width:100%; height:100%; border:0; background:#fff; }
+  #empty { position:absolute; inset:0; display:grid; place-items:center; padding:24px; text-align:center; color:var(--muted); }
+  #empty p { max-width:46ch; }
+</style>
+</head>
+<body>
+<header>
+  <form class="row" id="form">
+    <input id="url" type="text" placeholder="Enter a web address, e.g. example.com" autocomplete="off" aria-label="Web address">
+    <button type="submit">Load</button>
+  </form>
+  <div class="row">
+    <select id="relay" aria-label="Relay service">
+      <option value="https://api.allorigins.win/raw?url=">Relay: allorigins.win</option>
+      <option value="https://corsproxy.io/?">Relay: corsproxy.io</option>
+      <option value="custom">Relay: my own endpoint…</option>
+      <option value="direct">No relay (direct, CORS-enabled sites only)</option>
+    </select>
+    <input id="custom" type="text" placeholder="https://your-relay.example/?url=" hidden aria-label="Custom relay prefix">
+  </div>
+  <div id="status" role="status"></div>
+</header>
+<main>
+  <div id="empty"><p>Type an address above. The page is fetched through the selected relay and shown in a sandboxed frame with scripts disabled.</p></div>
+  <iframe id="view" sandbox="allow-same-origin" title="Proxied page" hidden></iframe>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const view = $('view'), statusEl = $('status');
+
+$('relay').addEventListener('change', () => { $('custom').hidden = $('relay').value !== 'custom'; });
+
+function normalize(raw) {
+  raw = raw.trim();
+  if (!raw) return null;
+  if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+  try { return new URL(raw); } catch { return null; }
+}
+
+async function load(target) {
+  const relay = $('relay').value;
+  let prefix = relay === 'custom' ? $('custom').value.trim() : relay;
+  const fetchUrl = relay === 'direct' ? target.href : prefix + encodeURIComponent(target.href);
+  statusEl.textContent = 'Loading ' + target.href + '…';
+  try {
+    const res = await fetch(fetchUrl);
+    if (!res.ok) throw new Error('Server returned ' + res.status);
+    const type = res.headers.get('content-type') || '';
+    if (type && !/html|text|xml/i.test(type)) throw new Error('Not an HTML page (' + type + ')');
+    let html = await res.text();
+    // Make relative links/images resolve against the original site, and route link clicks back through the proxy.
+    const base = '<base href="' + target.href.replace(/"/g, '&quot;') + '">';
+    html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + base) : base + html;
+    html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    view.srcdoc = html;
+    view.hidden = false; $('empty').hidden = true;
+    view.onload = () => {
+      try {
+        view.contentDocument.addEventListener('click', e => {
+          const a = e.target.closest && e.target.closest('a[href]');
+          if (!a) return;
+          e.preventDefault();
+          const next = normalize(a.href);
+          if (next) { $('url').value = next.href; load(next); }
+        });
+      } catch {}
+    };
+    statusEl.textContent = 'Loaded ' + target.href;
+  } catch (err) {
+    statusEl.textContent = 'Could not load: ' + err.message + '. Try another relay, or check the address.';
+  }
+}
+
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const t = normalize($('url').value);
+  if (!t) { statusEl.textContent = 'Enter a valid web address.'; return; }
+  $('url').value = t.href;
+  load(t);
+});
+</script>
+</body>
+</html>
